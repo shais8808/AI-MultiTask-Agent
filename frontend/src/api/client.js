@@ -11,8 +11,15 @@
  */
 import axios from "axios";
 
+// In local dev this is empty, so requests go to relative "/api" paths,
+// which Vite's dev server proxies to the backend (see vite.config.js).
+// In production (e.g. Render's static site), there is no proxy, so
+// VITE_API_BASE_URL must be set to the deployed backend's origin,
+// e.g. "https://productivity-agent-backend.onrender.com".
+const API_ORIGIN = import.meta.env.VITE_API_BASE_URL || "";
+
 const client = axios.create({
-  baseURL: "/api",
+  baseURL: `${API_ORIGIN}/api`,
   timeout: 35000, // slightly above the backend's REQUEST_TIMEOUT_SECONDS=30
 });
 
@@ -62,6 +69,6 @@ export const submitApprovalDecision = (approvalId, decision, editedArguments) =>
 export const listLogs = (limit = 50) =>
   client.get("/logs", { params: { limit } }).then((r) => r.data.logs);
 
-export const checkHealth = () => client.get("/health", { baseURL: "/" }).then((r) => r.data);
+export const checkHealth = () => client.get("/health", { baseURL: API_ORIGIN || "/" }).then((r) => r.data);
 
 export default client;
