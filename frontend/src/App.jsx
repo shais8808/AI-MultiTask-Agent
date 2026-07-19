@@ -28,6 +28,7 @@ export default function App() {
   const [activePanel, setActivePanel] = useState("tasks");
   const [pendingApproval, setPendingApproval] = useState(null);
   const [agentStatus, setAgentStatus] = useState("idle");
+  const [agentPhase, setAgentPhase] = useState(null);
   const [refreshSignal, setRefreshSignal] = useState(0);
 
   const isSmallScreen = useMediaQuery("(max-width:900px)");
@@ -56,7 +57,7 @@ export default function App() {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <AgentStatusBar agentStatus={agentStatus} />
+      <AgentStatusBar agentStatus={agentStatus} phase={agentPhase} />
       <Box sx={{ flexGrow: 1, overflow: "hidden", p: 1.5 }}>
         <Grid container spacing={1.5} sx={{ height: "100%" }}>
           {!isSmallScreen && (
@@ -71,6 +72,7 @@ export default function App() {
               <ChatPanel
                 sessionId={sessionId}
                 onAgentResult={handleAgentResult}
+                onPhaseChange={setAgentPhase}
                 pendingApproval={pendingApproval}
               />
             </Paper>

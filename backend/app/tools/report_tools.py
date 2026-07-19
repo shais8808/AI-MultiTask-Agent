@@ -44,6 +44,22 @@ from app.services.llm_service import LLMServiceError, get_llm_service
 logger = logging.getLogger(__name__)
 
 
+def _ensure_aware(dt: datetime) -> datetime:
+    """
+    Normalize a possibly-naive datetime to timezone-aware UTC before
+    comparing it against `datetime.now(timezone.utc)`.
+
+    SQLite doesn't preserve timezone info on `DateTime(timezone=True)`
+    columns — values round-tripped through it often come back naive even
+    though they were stored as true UTC (see `models.py`'s `_utcnow()`).
+    Without this, comparing a naive `Task.updated_at`/`due_date` against
+    an aware "now" raises `TypeError: can't compare offset-naive and
+    offset-aware datetimes` — this is safe regardless of DB backend since
+    every datetime this app stores is UTC to begin with.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 # ---------------------------------------------------------------------
 # extract_meeting_actions (REQUIRED)
 # ---------------------------------------------------------------------
@@ -214,26 +230,36 @@ def generate_weekly_report(arguments: Dict[str, Any], tool_call_id: str) -> Tool
             repo = TaskRepository(db)
             all_tasks = repo.list(limit=1000)
 
-        recent = [t for t in all_tasks if t.updated_at >= cutoff]
+        recent = [t for t in all_tasks if _ensure_aware(t.updated_at) >= cutoff]
         completed = [t for t in recent if t.status.value == "completed"]
-        overdue = [t for t in all_tasks if t.due_date and t.due_date < datetime.now(timezone.utc)
+        active = [t for t in all_tasks if t.status.value not in ("completed", "cancelled")]
+        overdue = [t for t in all_tasks if t.due_date and _ensure_aware(t.due_date) < datetime.now(timezone.utc)
                    and t.status.value not in ("completed", "cancelled")]
 
         stats = {
             "period_days": data.days,
-            "total_active_tasks": len([t for t in all_tasks if t.status.value not in ("completed", "cancelled")]),
+            "total_active_tasks": len(active),
             "completed_this_period": len(completed),
             "overdue_count": len(overdue),
         }
 
         summary_text = _summarize_report(stats, completed, overdue)
+        # Structurally separate from the narrative summary (Workflow C
+        # step 5: "Agent recommends priorities for the next week") so the
+        # frontend/caller can render "what to focus on" as its own list
+        # rather than parsing it back out of prose.
+        recommended_priorities = _recommend_next_week_priorities(active, overdue)
 
         duration_ms = int((time.monotonic() - start) * 1000)
         return ToolResult(
             tool_call_id=tool_call_id,
             tool_name="generate_weekly_report",
             success=True,
-            output={"stats": stats, "summary": summary_text},
+            output={
+                "stats": stats,
+                "summary": summary_text,
+                "recommended_priorities": recommended_priorities,
+            },
             duration_ms=duration_ms,
         )
     except Exception as exc:  # noqa: BLE001
@@ -269,6 +295,72 @@ def _summarize_report(stats: Dict[str, Any], completed: List[Any], overdue: List
         return summary if isinstance(summary, str) and summary.strip() else fallback
     except Exception as exc:  # noqa: BLE001
         logger.warning("Weekly report LLM summary failed, using fallback: %s", exc)
+        return fallback
+
+
+def _recommend_next_week_priorities(
+    active: List[Any], overdue: List[Any], max_items: int = 5
+) -> List[Dict[str, Any]]:
+    """
+    Recommend what to focus on next week — Workflow C step 5. Tries the
+    LLM for reasoned recommendations (weighing overdue status alongside
+    priority); falls back to a deterministic overdue-first, then
+    priority/due-date sort on any LLM failure, matching the graceful-
+    degradation pattern used by `generate_work_plan`.
+    """
+    if not active:
+        return []
+
+    priority_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    overdue_ids = {t.id for t in overdue}
+    fallback_sorted = sorted(
+        active,
+        key=lambda t: (
+            t.id not in overdue_ids,  # overdue tasks sort first
+            priority_rank.get(t.priority.value, 4),
+            t.due_date or t.created_at,
+        ),
+    )[:max_items]
+    fallback = [
+        {
+            "task_id": t.id,
+            "title": t.title,
+            "reason": (
+                f"Overdue, priority={t.priority.value}."
+                if t.id in overdue_ids
+                else f"Priority={t.priority.value}, due={t.due_date.isoformat() if t.due_date else 'none'}."
+            ),
+        }
+        for t in fallback_sorted
+    ]
+
+    try:
+        llm = get_llm_service()
+    except LLMServiceError as exc:
+        logger.warning("LLM unavailable for weekly priority recommendation, using fallback sort: %s", exc)
+        return fallback
+
+    task_summaries = "\n".join(
+        f"- id={t.id} | title={t.title!r} | priority={t.priority.value} | "
+        f"status={t.status.value} | due={t.due_date.isoformat() if t.due_date else 'none'} | "
+        f"overdue={t.id in overdue_ids}"
+        for t in active[:50]
+    )
+    prompt = (
+        f"Given these currently active tasks, recommend the top {max_items} priorities "
+        "to focus on NEXT WEEK. Favor overdue and high/critical-priority items. For each, "
+        "give a one-sentence reason.\n\n"
+        f"Tasks:\n{task_summaries}\n\n"
+        'Return JSON: {"priorities": [{"task_id": "...", "title": "...", "reason": "..."}]}'
+    )
+    try:
+        result = llm.generate_json(prompt, system_prompt="You are a productivity planning assistant.")
+        priorities = result.get("priorities")
+        if not isinstance(priorities, list) or not priorities:
+            raise ValueError("LLM returned no usable priorities")
+        return priorities[:max_items]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LLM weekly priority recommendation failed, using fallback sort: %s", exc)
         return fallback
 
 
@@ -349,7 +441,10 @@ REPORT_TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "generate_weekly_report": {
         "fn": generate_weekly_report,
         "requires_approval": False,
-        "description": "Generate a weekly productivity report with stats and an LLM-written summary.",
+        "description": (
+            "Generate a weekly productivity report: completion stats, an LLM-written summary, "
+            "and recommended priorities to focus on next week."
+        ),
         "input_schema": WeeklyReportRequest,
     },
     "draft_follow_up_email": {

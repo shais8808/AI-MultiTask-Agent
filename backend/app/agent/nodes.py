@@ -24,6 +24,7 @@ How it interacts with the rest of the system
   only decide WHAT happened, `graph.py` decides WHERE to go next).
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -41,7 +42,7 @@ from app.agent.state import AgentState
 from app.config import get_settings
 from app.logging.run_logger import get_or_create_run_logger
 from app.router import (
-    dispatch_tool,
+    dispatch_tool_with_timeout,
     get_tool_descriptions,
     is_greeting_only,
     resolve_referenced_task,
@@ -196,7 +197,26 @@ def tool_selection_node(state: AgentState) -> Dict[str, Any]:
             )
         )
 
-    return {**step_update, "tool_calls": tool_calls}
+    # Duplicate tool-call detection (Agent Execution Limits / loop
+    # prevention): an LLM occasionally proposes the same tool with
+    # identical arguments more than once in one response (e.g. two
+    # identical create_task calls for one user request). Deduping here —
+    # before validation/approval/execution — stops the duplicate from
+    # ever actually running, rather than creating two identical tasks.
+    deduped_calls: List[ToolCall] = []
+    seen_signatures = set()
+    for call in tool_calls:
+        signature = (call.tool_name, json.dumps(call.arguments, sort_keys=True, default=str))
+        if signature in seen_signatures:
+            logger.warning(
+                "tool_selection_node dropped duplicate tool call for run_id=%s: %s(%s)",
+                state.get("run_id"), call.tool_name, call.arguments,
+            )
+            continue
+        seen_signatures.add(signature)
+        deduped_calls.append(call)
+
+    return {**step_update, "tool_calls": deduped_calls}
 
 
 # ---------------------------------------------------------------------
@@ -324,7 +344,9 @@ def tool_execution_node(state: AgentState) -> Dict[str, Any]:
     new_referenced_tasks = state.get("referenced_tasks", [])
 
     for call in tool_calls:
-        result = dispatch_tool(call.tool_name, call.arguments, call.tool_call_id)
+        result = dispatch_tool_with_timeout(
+            call.tool_name, call.arguments, call.tool_call_id, settings.request_timeout_seconds
+        )
         results.append(result)
 
         if result.success and result.output:

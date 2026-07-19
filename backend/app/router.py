@@ -28,6 +28,7 @@ How it interacts with the rest of the system
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any, Dict, List, Optional
 
 from app.schemas.tool_models import ToolResult
@@ -37,6 +38,11 @@ from app.tools.report_tools import REPORT_TOOL_REGISTRY
 from app.tools.task_tools import TASK_TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
+
+# Dedicated pool for running tools under a wall-clock timeout (see
+# `dispatch_tool_with_timeout` below). Separate from any LLM-call thread
+# pools so a hung tool can never starve LLM request handling.
+_TOOL_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tool-exec")
 
 # Single source of truth for every tool the agent can call.
 GLOBAL_TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
@@ -113,6 +119,38 @@ def dispatch_tool(tool_name: str, arguments: Dict[str, Any], tool_call_id: str) 
             tool_name=tool_name,
             success=False,
             error=f"Unexpected error executing tool {tool_name!r}: {exc}",
+        )
+
+
+def dispatch_tool_with_timeout(
+    tool_name: str, arguments: Dict[str, Any], tool_call_id: str, timeout_seconds: float
+) -> ToolResult:
+    """
+    Same as `dispatch_tool`, but bounded by a wall-clock timeout (ERROR
+    HANDLING: 'Tool execution timeout') — a hung tool (e.g. a stuck DB
+    call) can never make an agent run hang forever.
+
+    Runs `dispatch_tool` in a worker thread so the timeout can actually be
+    enforced from the caller's side; Python cannot forcibly kill a running
+    thread, so a timed-out tool call may still complete in the background
+    after this function has already returned a failure `ToolResult` — an
+    accepted, documented limitation rather than a correctness bug (the
+    tool's eventual side effect, if any, is idempotent-or-harmless for
+    every tool in this registry: creates/updates a single row).
+    """
+    future = _TOOL_EXECUTOR.submit(dispatch_tool, tool_name, arguments, tool_call_id)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError:
+        logger.error(
+            "dispatch_tool_with_timeout: tool %r timed out after %ss (tool_call_id=%s)",
+            tool_name, timeout_seconds, tool_call_id,
+        )
+        return ToolResult(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            success=False,
+            error=f"Tool {tool_name!r} timed out after {timeout_seconds}s.",
         )
 
 

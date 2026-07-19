@@ -54,7 +54,18 @@ const PROVIDER_MODELS = {
   openrouter: ["deepseek/deepseek-chat", "meta-llama/llama-3.3-70b-instruct", "openai/gpt-4o-mini"],
 };
 
-export default function ChatPanel({ sessionId, onAgentResult, pendingApproval }) {
+// Sequence of pipeline phases shown while a turn is in flight. The
+// backend answers with one synchronous HTTP response per turn (no
+// streaming), so this does NOT reflect the real-time backend node the
+// agent is actually in — it's a client-side approximation of the known
+// pipeline order (Intent -> Tool Selection -> Validation -> Approval
+// Gate -> Tool Execution -> Response Generation), advanced on a timer so
+// the user sees meaningful progress instead of one static "Working..."
+// label for the whole request.
+const REQUEST_PHASES = ["thinking", "selecting_tool", "validating", "executing", "generating_response"];
+const PHASE_INTERVAL_MS = 900;
+
+export default function ChatPanel({ sessionId, onAgentResult, onPhaseChange, pendingApproval }) {
   const [messages, setMessages] = useState([
     {
       role: "assistant",
@@ -86,6 +97,13 @@ export default function ChatPanel({ sessionId, onAgentResult, pendingApproval })
     setInput("");
     setSending(true);
 
+    let phaseIndex = 0;
+    onPhaseChange?.(REQUEST_PHASES[0]);
+    const phaseTimer = setInterval(() => {
+      phaseIndex = Math.min(phaseIndex + 1, REQUEST_PHASES.length - 1);
+      onPhaseChange?.(REQUEST_PHASES[phaseIndex]);
+    }, PHASE_INTERVAL_MS);
+
     try {
       const result = await sendChatMessage(sessionId, text, llmProvider, llmModel);
       setMessages((prev) => [
@@ -108,6 +126,8 @@ export default function ChatPanel({ sessionId, onAgentResult, pendingApproval })
         },
       ]);
     } finally {
+      clearInterval(phaseTimer);
+      onPhaseChange?.(null);
       setSending(false);
     }
   };

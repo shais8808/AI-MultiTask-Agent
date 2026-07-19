@@ -7,7 +7,7 @@
  * the most recent agent run (idle / thinking / awaiting approval / error).
  */
 import React, { useEffect, useState } from "react";
-import { AppBar, Toolbar, Typography, Chip, Box } from "@mui/material";
+import { AppBar, Toolbar, Typography, Chip, Box, CircularProgress } from "@mui/material";
 import CircleIcon from "@mui/icons-material/Circle";
 import { checkHealth } from "../api/client.js";
 
@@ -26,7 +26,19 @@ const STATUS_COLOR = {
   in_progress: "info",
 };
 
-export default function AgentStatusBar({ agentStatus }) {
+// Labels for the in-flight request phase (see ChatPanel.jsx's
+// REQUEST_PHASES) — shown while a turn is actively being processed,
+// replacing the single generic "Working..." chip with the specific step
+// of the pipeline the request is expected to be in.
+const PHASE_LABEL = {
+  thinking: "Thinking...",
+  selecting_tool: "Selecting a tool...",
+  validating: "Validating...",
+  executing: "Executing tool...",
+  generating_response: "Generating response...",
+};
+
+export default function AgentStatusBar({ agentStatus, phase }) {
   const [health, setHealth] = useState(null);
 
   useEffect(() => {
@@ -52,12 +64,22 @@ export default function AgentStatusBar({ agentStatus }) {
           </Typography>
         )}
         <Box sx={{ flexGrow: 1 }} />
-        <Chip
-          size="small"
-          label={STATUS_LABEL[agentStatus] || "Idle"}
-          color={STATUS_COLOR[agentStatus] || "default"}
-          variant={agentStatus ? "filled" : "outlined"}
-        />
+        {phase ? (
+          <Chip
+            size="small"
+            icon={<CircularProgress size={12} thickness={6} sx={{ color: "inherit" }} />}
+            label={PHASE_LABEL[phase] || "Working..."}
+            color="info"
+            variant="filled"
+          />
+        ) : (
+          <Chip
+            size="small"
+            label={STATUS_LABEL[agentStatus] || "Idle"}
+            color={STATUS_COLOR[agentStatus] || "default"}
+            variant={agentStatus ? "filled" : "outlined"}
+          />
+        )}
       </Toolbar>
     </AppBar>
   );
