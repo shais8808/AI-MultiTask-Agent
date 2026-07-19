@@ -197,3 +197,19 @@ app.include_router(tasks_router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(notes_router, prefix="/api/notes", tags=["notes"])
 app.include_router(approvals_router, prefix="/api/approvals", tags=["approvals"])
 app.include_router(logs_router, prefix="/api/logs", tags=["logs"])
+
+
+# -----------------------------------------------------------------------
+# Built frontend (single-container deployment, e.g. Hugging Face Spaces)
+# -----------------------------------------------------------------------
+# Only present when the Docker build has copied the compiled React app in
+# (see the root-level Dockerfile). Absent in local dev, where the frontend
+# is served separately by `npm run dev` via Vite's own dev server — so
+# this mount is a no-op for the normal local workflow. Registered LAST so
+# it never shadows the API routes or /health above.
+_frontend_dist = os.path.join(os.path.dirname(__file__), "static_frontend")
+if os.path.isdir(_frontend_dist):
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")
+    logger.info("Serving built frontend from %s", _frontend_dist)
