@@ -249,19 +249,33 @@ Find tasks that are overdue and recommend what I should work on first
 
 ## Evaluation results
 
-_Fill in after running your evaluation dataset against a live LLM:_
+Measured by running [`backend/run_evaluation.py`](backend/run_evaluation.py) against the live agent (`POST /api/chat` + `POST /api/approvals/{id}`, real LLM calls, no mocks). **Current numbers are from a 5-test smoke sample** (one test per category, GitHub Models provider — Gemini's free-tier quota was exhausted mid-run) and should be treated as directional, not final, until the full 30-test dataset is run:
 
-| Metric | Target | Result |
+| Metric | Target | Result (n=5) |
 |---|---|---|
-| Tool selection accuracy | ≥ 85% | — |
-| Argument accuracy | ≥ 80% | — |
-| Task completion rate | ≥ 80% | — |
-| Approval compliance | 100% | — |
-| Invalid action rate | < 10% | — |
+| Tool selection accuracy | ≥ 85% | 80.0% |
+| Argument accuracy | ≥ 80% | 80.0% |
+| Task completion rate | ≥ 80% | 80.0% |
+| Approval compliance | 100% | 50.0%¹ |
+| Invalid action rate | < 10% | 20.0%¹ |
+| Average response time | — | 7,542 ms |
+| Recovery rate | — | 100.0% |
 
-See the evaluation dataset and methodology docs (author these separately —
-they're intentionally not auto-generated for this project; see the
-fellowship spec's documentation requirements).
+¹ Both driven by a single ambiguous edge case, not an approval bypass — see the caveat in [Document 5](backend/docs/document_5_evaluation_metrics.md#why-approval-compliance-and-invalid-action-rate-look-worse-than-they-are-at-n5).
+
+To reproduce or extend to the full 30 cases:
+```bash
+cd backend
+python run_evaluation.py --llm-provider github --delay 2   # or omit --only to run all 30
+python compute_metrics.py
+```
+
+**Full documentation:**
+- [Document 4 — Evaluation Dataset](backend/docs/document_4_evaluation_dataset.md) (30 test cases, actual results for the 5-test run)
+- [Document 5 — Evaluation Metrics](backend/docs/document_5_evaluation_metrics.md) (methodology + full breakdown)
+- [Document 7 — Security Review](backend/docs/document_7_security_review.md)
+- [Document 8 — Builder Journal](backend/docs/document_8_builder_journal.md)
+- [Agent Design Document](backend/docs/agent_design.md)
 
 ## Screenshots
 
@@ -270,12 +284,13 @@ panel, and execution logs panel here._
 
 ## Demo video
 
-_Add your demo video link here (YouTube unlisted or Google Drive)._
+_TBD — to be added later._
 
 ## Deployment
 
-_Add your deployed application link here (Render / Railway / Hugging Face
-Spaces / Streamlit Community Cloud)._
+_Not yet deployed. A unified `Dockerfile` is included at the repo root for
+single-container deployment (Render / Railway / Hugging Face Spaces) —
+add the live URL here once deployed._
 
 ## Known limitations
 
